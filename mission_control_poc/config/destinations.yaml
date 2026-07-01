@@ -1,0 +1,59 @@
+destinations:
+- name: Storage
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  notes: Default pickup area
+- name: Hall_A
+  pose:
+    x: 5.2
+    y: 1.1
+    yaw: 1.57
+- name: Ballroom
+  pose:
+    x: 12.4
+    y: -3.0
+    yaw: 3.14
+- name: Point1
+  pose:
+    x: 120.4
+    y: -30.0
+    yaw: 3.14
+- name: Temp Destination
+  pose:
+    x: -4.06
+    y: -1.93
+    yaw: 1.4730022340514792
+  notes: Map click on downstairs_test_july1
+- name: TestPointJune3
+  pose:
+    x: 5.92
+    y: 0.11
+    yaw: 0.33
+  notes: Saved from DownStairsTestMapJune03
+- name: jj31
+  pose:
+    x: 0.87
+    y: -1.53
+    yaw: 0.25
+  notes: Saved from DownStairsTestMapJune03
+- name: InitialTest
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  notes: Saved from DownStairsTestMapJune03
+- name: DestinationTest2June03
+  pose:
+    x: 5.79
+    y: -0.19
+    yaw: 0.0
+  notes: Saved from DownStairsTestMapJune03
+- name: InitialPose
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  notes: Saved from DownStairsTestMapJune03
+home_destination: Storage
