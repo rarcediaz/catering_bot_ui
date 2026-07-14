@@ -4,78 +4,95 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>IntelliTrolley Mission Control</title>
-    <link rel="stylesheet" href="/ui-assets/styles.css?v=20260608-color-console" />
+    <link rel="stylesheet" href="/ui-assets/styles.css?v=20260713-map-demo" />
   </head>
   <body>
     <div class="shell">
       <main class="main-container">
         <section class="screen dashboard-screen" id="screen-start">
-          <article class="simple-console" aria-label="Robot operations">
-            <div class="simple-toolbar">
-              <label class="selector-field robot-selector">
-                <span>Robot</span>
-                <select id="selected-robot">
-                  <option value="">Waiting for robots</option>
-                </select>
-              </label>
+          <article class="simple-console map-console" aria-label="Robot map operations">
+            <div class="map-shell dashboard-map-shell" id="dashboard-map-shell">
+              <canvas id="state-map-canvas" width="1280" height="820"></canvas>
+              <div class="destination-overlay" id="destination-overlay" aria-label="Map destinations"></div>
+              <div class="map-placeholder" id="state-map-placeholder">Loading downstairs_test_july_1.</div>
 
-              <div class="simple-title">
-                <p class="eyebrow">IntelliTrolley</p>
-                <h1>Robot Operations</h1>
+              <div class="map-control robot-control">
+                <label class="selector-field robot-selector">
+                  <span>Robot</span>
+                  <select id="selected-robot">
+                    <option value="">Waiting for robots</option>
+                  </select>
+                </label>
               </div>
 
-              <label class="selector-field map-selector">
-                <span>Map</span>
-                <select id="saved-map-select">
-                  <option value="">No saved maps found</option>
-                </select>
-              </label>
-            </div>
+              <div class="map-title-chip" id="demo-map-title">downstairs_test_july_1</div>
 
-            <div class="simple-stats" aria-label="Robot stats">
-              <div><span>Battery</span><strong id="state-battery">--</strong></div>
-              <div><span>Latency</span><strong id="state-latency">--</strong></div>
-              <div><span>Connection</span><strong id="state-connection">--</strong></div>
-              <div><span>Status</span><strong id="state-mode">--</strong></div>
-              <div><span>Warning</span><strong id="state-warning">--</strong></div>
-            </div>
+              <aside class="location-search-panel" aria-label="Saved locations">
+                <label class="location-search-field">
+                  <span>Search</span>
+                  <input id="location-search" type="search" placeholder="Search locations" autocomplete="off" />
+                </label>
+                <div class="location-results" id="location-results"></div>
+              </aside>
 
-            <div class="map-frame">
-              <div class="map-shell dashboard-map-shell">
-                <canvas id="state-map-canvas" width="980" height="600"></canvas>
-                <div class="map-placeholder" id="state-map-placeholder">Select a map to show live map data.</div>
+              <div class="map-zoom-controls" aria-label="Map zoom controls">
+                <button class="icon-button" id="map-zoom-in" type="button" aria-label="Zoom in">+</button>
+                <button class="icon-button" id="map-zoom-out" type="button" aria-label="Zoom out">-</button>
               </div>
-              <div class="map-meta-row">
-                <span id="state-map-meta">No live map yet</span>
-                <span id="manage-current-map">Current Map: No map selected</span>
+
+              <div class="quick-action-bar" aria-label="Robot safety controls">
+                <button class="icon-button action-localize" id="localize-robot-button" type="button" aria-label="Localize robot">
+                  <span class="refresh-symbol" aria-hidden="true"></span>
+                </button>
+                <button class="icon-button action-stop" id="emergency-stop-button" type="button" data-power-mode="STOP" aria-label="Emergency stop">
+                  <span class="stop-symbol" aria-hidden="true"></span>
+                </button>
               </div>
-            </div>
 
-            <div class="simple-actions">
-              <button class="secondary-button" id="localize-robot-button" type="button">Localize</button>
-              <button class="secondary-button" id="manual-mode-button" type="button">Manual Control</button>
-              <button class="danger-button" id="cancel-current-mission-button" type="button">Cancel</button>
-            </div>
-
-            <div class="manual-panel hidden" id="manual-control-panel">
-              <div class="manual-drive-shell is-disabled" id="manual-drive-shell">
-                <div class="manual-pad" id="manual-pad">
-                  <button class="manual-drive-button manual-forward" type="button" data-manual-linear="1" data-manual-angular="0" data-manual-label="Forward">↑</button>
-                  <button class="manual-drive-button manual-left" type="button" data-manual-linear="0" data-manual-angular="1" data-manual-label="Left">←</button>
-                  <button class="manual-drive-button manual-stop" type="button" data-manual-stop="true">Stop</button>
-                  <button class="manual-drive-button manual-right" type="button" data-manual-linear="0" data-manual-angular="-1" data-manual-label="Right">→</button>
-                  <button class="manual-drive-button manual-backward" type="button" data-manual-linear="-1" data-manual-angular="0" data-manual-label="Backward">↓</button>
+              <div class="map-confirm-popover hidden" id="map-confirm-popover" role="dialog" aria-live="polite">
+                <p id="map-confirm-text">Are you sure you want to go to this point?</p>
+                <div class="confirm-actions">
+                  <button class="primary-button" id="confirm-map-go" type="button">Go</button>
+                  <button class="secondary-button" id="confirm-map-cancel" type="button">Cancel</button>
                 </div>
               </div>
-              <p class="helper" id="manual-status">Manual driving is available when the robot is on.</p>
+
+              <div class="map-message-stack">
+                <p class="message" id="map-message" aria-live="polite"></p>
+                <p class="message" id="state-message" aria-live="polite"></p>
+                <p class="message" id="manage-message" aria-live="polite"></p>
+                <p class="message" id="start-next-message" aria-live="polite"></p>
+                <p class="message" id="manual-message" aria-live="polite"></p>
+              </div>
             </div>
 
-            <div class="message-stack">
-              <p class="message" id="map-message" aria-live="polite"></p>
-              <p class="message" id="state-message" aria-live="polite"></p>
-              <p class="message" id="manage-message" aria-live="polite"></p>
-              <p class="message" id="start-next-message" aria-live="polite"></p>
-              <p class="message" id="manual-message" aria-live="polite"></p>
+            <div class="hidden">
+              <div class="simple-stats" aria-label="Robot stats">
+                <div><span>Battery</span><strong id="state-battery">--</strong></div>
+                <div><span>Latency</span><strong id="state-latency">--</strong></div>
+                <div><span>Connection</span><strong id="state-connection">--</strong></div>
+                <div><span>Status</span><strong id="state-mode">--</strong></div>
+                <div><span>Warning</span><strong id="state-warning">--</strong></div>
+              </div>
+              <span id="state-map-meta">No live map yet</span>
+              <span id="manage-current-map">Current Map: No map selected</span>
+              <select id="saved-map-select">
+                <option value="">No saved maps found</option>
+              </select>
+              <button class="secondary-button" id="manual-mode-button" type="button">Manual Control</button>
+              <button class="danger-button" id="cancel-current-mission-button" type="button">Cancel</button>
+              <div class="manual-panel hidden" id="manual-control-panel">
+                <div class="manual-drive-shell is-disabled" id="manual-drive-shell">
+                  <div class="manual-pad" id="manual-pad">
+                    <button class="manual-drive-button manual-forward" type="button" data-manual-linear="1" data-manual-angular="0" data-manual-label="Forward">↑</button>
+                    <button class="manual-drive-button manual-left" type="button" data-manual-linear="0" data-manual-angular="1" data-manual-label="Left">←</button>
+                    <button class="manual-drive-button manual-stop" type="button" data-manual-stop="true">Stop</button>
+                    <button class="manual-drive-button manual-right" type="button" data-manual-linear="0" data-manual-angular="-1" data-manual-label="Right">→</button>
+                    <button class="manual-drive-button manual-backward" type="button" data-manual-linear="-1" data-manual-angular="0" data-manual-label="Backward">↓</button>
+                  </div>
+                </div>
+                <p class="helper" id="manual-status">Manual driving is available when the robot is on.</p>
+              </div>
             </div>
           </article>
 
@@ -437,6 +454,6 @@
       </div>
     </div>
 
-    <script src="/ui-assets/app.js?v=20260608-color-console" defer></script>
+    <script src="/ui-assets/app.js?v=20260713-map-demo" defer></script>
   </body>
 </html>

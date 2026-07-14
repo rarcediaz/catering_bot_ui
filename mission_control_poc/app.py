@@ -617,6 +617,17 @@ async def delete_robot_map(robot_id: str, req: RobotMapDeleteRequest) -> Dict[st
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@app.get("/robots/{robot_id}/maps/{map_name}/preview")
+async def robot_map_preview(robot_id: str, map_name: str) -> Dict[str, Any]:
+    try:
+        preview_map = await mc.load_robot_map_preview(robot_id, map_name)
+        return {"ok": True, "map": preview_map}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="robot not found")
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.post("/destinations/temp")
 def upsert_temp_destination(req: TempDestinationRequest) -> Dict[str, Any]:
     destination = dest_config.upsert_destination(

@@ -289,6 +289,11 @@ class SimRobotAdapter(RobotAdapter):
                 "updated_at": time.time(),
             }
         }
+        for preview_map in _load_packaged_demo_maps():
+            self._saved_maps.setdefault(preview_map["name"], preview_map)
+        if "downstairs_test_july1" in self._saved_maps:
+            self._current_map_name = "downstairs_test_july1"
+            self._launcher_processes["nav"] = True
 
         self._paused = asyncio.Event()
         self._paused.set()
@@ -2017,6 +2022,22 @@ def _read_pgm(path: Path) -> tuple[int, int, int, List[int]]:
         return width, height, max_value, pixels
 
     raise RuntimeError(f"Unsupported PGM format '{magic.decode(errors='replace')}' in {path}")
+
+
+def _load_packaged_demo_maps() -> List[Dict[str, Any]]:
+    workspace_root = Path(__file__).resolve().parents[3]
+    demo_maps = [
+        workspace_root / "src" / "my_bot" / "maps" / "downstairs_test_july1.yaml",
+    ]
+    loaded_maps: List[Dict[str, Any]] = []
+    for yaml_path in demo_maps:
+        if not yaml_path.exists():
+            continue
+        try:
+            loaded_maps.append(_load_map_preview_from_yaml(yaml_path))
+        except RuntimeError:
+            continue
+    return loaded_maps
 
 
 def create_robot_adapter_from_env(dest_config: DestinationConfig) -> RobotAdapter:

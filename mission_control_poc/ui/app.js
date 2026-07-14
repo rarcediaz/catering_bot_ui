@@ -7,11 +7,29 @@ const state = {
   activeScreen: "start",
   operatorPanel: {
     data: null,
+    mapPreview: null,
+    mapPreviewName: null,
+    mapPreviewInFlight: false,
     refreshTimer: null,
     renderedMapKey: null,
     renderedMapCanvas: null,
     frames: {},
     addMapMode: "move",
+    locationFilter: "",
+    pendingGoal: null,
+    mapView: {
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      followRobot: true,
+      isPanning: false,
+      panPointerId: null,
+      startClientX: 0,
+      startClientY: 0,
+      startPanX: 0,
+      startPanY: 0,
+      pointerMoved: false,
+    },
   },
   returnPromptDismissed: new Set(),
   manualDrive: {
@@ -29,9 +47,38 @@ const MANUAL_BASE_SPEED = 0.5;
 const MANUAL_MAX_SPEED = 0.7;
 const MANUAL_ACCEL_RATE = 0.1;
 const MANUAL_TICK_MS = 100;
+const DEMO_MAP_BACKEND_NAME = "downstairs_test_july1";
+const DEMO_MAP_DISPLAY_NAME = "downstairs_test_july_1";
+const DASHBOARD_MIN_ZOOM = 0.75;
+const DASHBOARD_MAX_ZOOM = 4;
+const ROBOT_FOOTPRINT_FRONT_M = 0.9;
+const ROBOT_FOOTPRINT_REAR_M = 0.1;
+const ROBOT_FOOTPRINT_WIDTH_M = 0.6;
+const MESSAGE_SUCCESS_TIMEOUT_MS = 4500;
+const MESSAGE_ERROR_TIMEOUT_MS = 7000;
+const messageTimers = new WeakMap();
+const DEMO_LOCATIONS = [
+  { id: "asb-lab-1", name: "ASB Lab 1", pose: { x: -6.3, y: -2.95, yaw: 0 } },
+  { id: "asb-9817", name: "ASB 9817", pose: { x: 0.55, y: -1.25, yaw: 0 } },
+  { id: "cs-9813", name: "CS 9813", pose: { x: 8.65, y: -2.15, yaw: 0 } },
+  { id: "home-entry", name: "Home Entry", pose: { x: 9.85, y: -5.25, yaw: 0 } },
+  { id: "main-entry", name: "Main Entry", pose: { x: 8.95, y: 2.15, yaw: 0 } },
+  { id: "storage", name: "Storage", pose: { x: -8.75, y: -1.95, yaw: 0 } },
+];
 
 const elements = {
   selectedRobot: document.getElementById("selected-robot"),
+  dashboardMapShell: document.getElementById("dashboard-map-shell"),
+  destinationOverlay: document.getElementById("destination-overlay"),
+  locationSearch: document.getElementById("location-search"),
+  locationResults: document.getElementById("location-results"),
+  mapZoomIn: document.getElementById("map-zoom-in"),
+  mapZoomOut: document.getElementById("map-zoom-out"),
+  mapConfirmPopover: document.getElementById("map-confirm-popover"),
+  mapConfirmText: document.getElementById("map-confirm-text"),
+  confirmMapGo: document.getElementById("confirm-map-go"),
+  confirmMapCancel: document.getElementById("confirm-map-cancel"),
+  emergencyStopButton: document.getElementById("emergency-stop-button"),
   headerMode: document.getElementById("header-mode"),
   headerBattery: document.getElementById("header-battery"),
   headerConnection: document.getElementById("header-connection"),
@@ -148,13 +195,28 @@ document.addEventListener("DOMContentLoaded", () => {
 
   elements.selectedRobot.addEventListener("change", async () => {
     state.operatorPanel.data = null;
+    state.operatorPanel.mapPreview = null;
+    state.operatorPanel.mapPreviewName = null;
+    enableRobotFollow();
+    clearPendingMapGoal();
     state.operatorPanel.frames = {};
     await loadOperatorPanel();
+    await loadDemoMapPreview({ silent: true });
     renderAll();
   });
 
   elements.manageMapsButton.addEventListener("click", () => showScreen("manage"));
   elements.localizeRobotButton.addEventListener("click", handleLocalizeRobot);
+  elements.locationSearch.addEventListener("input", () => {
+    state.operatorPanel.locationFilter = elements.locationSearch.value.trim().toLowerCase();
+    renderLocationResults();
+  });
+  elements.locationResults.addEventListener("click", handleLocationClick);
+  elements.destinationOverlay.addEventListener("click", handleLocationClick);
+  elements.mapZoomIn.addEventListener("click", () => zoomDashboardMap(1.25));
+  elements.mapZoomOut.addEventListener("click", () => zoomDashboardMap(0.8));
+  elements.confirmMapGo.addEventListener("click", executePendingMapGoal);
+  elements.confirmMapCancel.addEventListener("click", clearPendingMapGoal);
   elements.calibrationUseCurrentPoseButton.addEventListener("click", fillCalibrationPoseFromRobot);
   elements.calibrationSendInitialPoseButton.addEventListener("click", handleSendCalibrationInitialPose);
   elements.startNextButton.addEventListener("click", handleStartNext);
@@ -196,6 +258,11 @@ document.addEventListener("DOMContentLoaded", () => {
   elements.returnModalStayButton.addEventListener("click", handleReturnStay);
   elements.saveTempDestinationButton.addEventListener("click", handleSaveTempDestination);
   elements.stateMapCanvas.addEventListener("click", handleDashboardMapClick);
+  elements.stateMapCanvas.addEventListener("pointerdown", handleDashboardMapPointerDown);
+  elements.stateMapCanvas.addEventListener("pointermove", handleDashboardMapPointerMove);
+  elements.stateMapCanvas.addEventListener("pointerup", handleDashboardMapPointerUp);
+  elements.stateMapCanvas.addEventListener("pointercancel", handleDashboardMapPointerUp);
+  elements.stateMapCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
   elements.clearCompletedButton.addEventListener("click", () =>
     handleQueueReset({
       button: elements.clearCompletedButton,
@@ -231,6 +298,7 @@ document.addEventListener("DOMContentLoaded", () => {
 async function boot() {
   await Promise.all([loadDestinations(), loadSnapshot()]);
   await loadOperatorPanel();
+  await loadDemoMapPreview({ silent: true });
   startOperatorPanelRefresh();
   connectStatusStream();
   syncTripType();
@@ -306,6 +374,36 @@ async function loadOperatorPanel({ silent = false } = {}) {
   }
 }
 
+async function loadDemoMapPreview({ silent = false } = {}) {
+  const robot = getSelectedRobot();
+  if (!robot || state.operatorPanel.mapPreviewInFlight) {
+    return;
+  }
+  if (state.operatorPanel.mapPreviewName === DEMO_MAP_BACKEND_NAME && state.operatorPanel.mapPreview) {
+    return;
+  }
+
+  state.operatorPanel.mapPreviewInFlight = true;
+  try {
+    const response = await fetch(
+      `/robots/${encodeURIComponent(robot.id)}/maps/${encodeURIComponent(DEMO_MAP_BACKEND_NAME)}/preview`
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Map preview load failed.");
+    }
+    state.operatorPanel.mapPreview = payload.map;
+    state.operatorPanel.mapPreviewName = DEMO_MAP_BACKEND_NAME;
+  } catch (error) {
+    if (!silent) {
+      setMessage(elements.mapMessage, error.message || "Map preview load failed.", true);
+    }
+  } finally {
+    state.operatorPanel.mapPreviewInFlight = false;
+    renderAll();
+  }
+}
+
 function renderAll() {
   renderHeader();
   renderStartRobotState();
@@ -318,6 +416,7 @@ function renderAll() {
   renderReturnPrompt();
   renderManualAvailability();
   renderMaps();
+  renderLocationResults();
   syncTripType();
   highlightNav();
 }
@@ -362,15 +461,24 @@ function populateDestinationSelects() {
 function populateRobotSelects() {
   const selectedRobotId = elements.selectedRobot.value;
   const requestRobotId = elements.requestRobot.value;
-  const robotOptions = state.robots
-    .map((robot) => `<option value="${escapeHtml(robot.id)}">${escapeHtml(robot.id)}</option>`)
+  const robots = sortedRobotsForSelection();
+  let selectedRobotChanged = false;
+  const robotOptions = robots
+    .map((robot) => {
+      const suffix = robotConnectionLabel(robot) === "Connected" ? "" : " (offline)";
+      return `<option value="${escapeHtml(robot.id)}">${escapeHtml(robot.id + suffix)}</option>`;
+    })
     .join("");
 
   elements.selectedRobot.innerHTML = robotOptions || '<option value="">No robots available</option>';
   if ([...elements.selectedRobot.options].some((option) => option.value === selectedRobotId)) {
     elements.selectedRobot.value = selectedRobotId;
-  } else if (state.robots.length) {
-    elements.selectedRobot.value = state.robots[0].id;
+  } else if (robots.length) {
+    elements.selectedRobot.value = robots[0].id;
+    selectedRobotChanged = true;
+  }
+  if (selectedRobotChanged) {
+    enableRobotFollow({ render: false });
   }
 
   elements.requestRobot.innerHTML = '<option value="">Auto-select available robot</option>' + robotOptions;
@@ -384,7 +492,7 @@ function renderHeader() {
   const power = robot?.power ?? {};
   const mode = displayPowerMode(power.mode || (robot?.mode === "ManualOverride" ? "MANUAL" : "AUTO"));
   const battery = power.battery_percent ?? batteryPercentFromVoltage(robot?.battery_v);
-  const mapName = currentMapName();
+  const mapName = dashboardMapDisplayName();
 
   setText(elements.headerMode, robot ? mode : "--");
   setText(elements.headerBattery, battery == null ? "--" : `${formatNumber(battery)}%`);
@@ -404,7 +512,7 @@ function renderStartRobotState() {
   setText(elements.startBattery, battery == null ? "--" : `${formatNumber(battery)}%`);
   setText(elements.startConnection, robot ? robotConnectionLabel(robot) : "--");
   setText(elements.startLatency, power.latency_ms == null ? "--" : `${formatNumber(power.latency_ms)} ms`);
-  setText(elements.startMap, currentMapName() || "No map");
+  setText(elements.startMap, dashboardMapDisplayName() || "No map");
   setText(elements.startLock, robot ? (power.safety_lock ? "Locked" : "Ready") : "--");
 }
 
@@ -471,7 +579,7 @@ function renderMapSetup() {
   const savedMaps = getSavedMaps();
   const current = currentMapName();
   const previousValue = elements.savedMapSelect.value;
-  elements.manageCurrentMap.textContent = `Current Map: ${current || "No map selected"}`;
+  elements.manageCurrentMap.textContent = `Current Map: ${dashboardMapDisplayName() || current || "No map selected"}`;
   elements.addSelectedMap.textContent = current || "No map selected";
 
   elements.savedMapSelect.innerHTML =
@@ -652,25 +760,157 @@ function renderMap(kind) {
     return;
   }
   const data = state.operatorPanel.data;
-  const map = data?.map_available ? data.map : null;
+  const map = getMapForKind(kind);
   const robot = getSelectedRobot();
 
   if (!map) {
     config.placeholder.classList.remove("hidden");
-    config.placeholder.textContent = currentMapName()
-      ? "Waiting for live map data."
-      : "Select a map to show the live map.";
+    config.placeholder.textContent =
+      kind === "state"
+        ? `Loading ${DEMO_MAP_DISPLAY_NAME}.`
+        : currentMapName()
+          ? "Waiting for live map data."
+          : "Select a map to show the live map.";
     setText(config.meta, "No live map yet");
     clearCanvas(config.canvas);
+    if (kind === "state") {
+      renderDestinationOverlay();
+    }
     return;
   }
 
   config.placeholder.classList.add("hidden");
-  setText(config.meta, `${map.width} x ${map.height}, ${formatNumber(map.resolution)} m/cell`);
+  const mapLabel = kind === "state" ? DEMO_MAP_DISPLAY_NAME : (map.name || currentMapName() || "Live map");
+  setText(config.meta, `${mapLabel}: ${map.width} x ${map.height}, ${formatNumber(map.resolution)} m/cell`);
   drawMap(config.canvas, map, {
     robot,
     initialPose: data?.initial_pose,
     goalPose: data?.goal_pose,
+    pendingGoal: kind === "state" ? state.operatorPanel.pendingGoal?.pose : null,
+    view: kind === "state" ? state.operatorPanel.mapView : null,
+  });
+  if (kind === "state") {
+    renderDestinationOverlay();
+    renderMapConfirmPopover();
+  }
+}
+
+function getMapForKind(kind) {
+  const data = state.operatorPanel.data;
+  if (data?.map_available && data.map) {
+    return data.map;
+  }
+  if (kind === "state") {
+    return state.operatorPanel.mapPreview;
+  }
+  return null;
+}
+
+function getDashboardLocations() {
+  const locationsByName = new Map();
+  DEMO_LOCATIONS.forEach((location) => {
+    locationsByName.set(location.name.toLowerCase(), {
+      ...location,
+      source: "demo",
+      configuredDestination: false,
+    });
+  });
+  state.destinations.forEach((destination) => {
+    const pose = destination.pose || {};
+    if ([pose.x, pose.y].some((value) => value == null || Number.isNaN(Number(value)))) {
+      return;
+    }
+    const key = destination.name.toLowerCase();
+    if (locationsByName.has(key)) {
+      return;
+    }
+    locationsByName.set(key, {
+      id: `destination-${slugify(destination.name)}`,
+      name: destination.name,
+      pose: {
+        x: Number(pose.x),
+        y: Number(pose.y),
+        yaw: Number(pose.yaw || 0),
+      },
+      source: "configured",
+      configuredDestination: true,
+    });
+  });
+  return [...locationsByName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderLocationResults() {
+  if (!elements.locationResults) {
+    return;
+  }
+  const filter = state.operatorPanel.locationFilter;
+  const locations = getDashboardLocations().filter((location) =>
+    !filter || location.name.toLowerCase().includes(filter)
+  );
+  if (!locations.length) {
+    elements.locationResults.innerHTML = '<p class="empty-state">No locations found.</p>';
+    return;
+  }
+
+  elements.locationResults.innerHTML = locations
+    .map((location) => `
+      <button class="location-result" type="button" data-location-id="${escapeHtml(location.id)}">
+        <span>${escapeHtml(location.name)}</span>
+      </button>
+    `)
+    .join("");
+}
+
+function renderDestinationOverlay() {
+  if (!elements.destinationOverlay) {
+    return;
+  }
+  const frame = state.operatorPanel.frames[elements.stateMapCanvas.id];
+  if (!frame) {
+    elements.destinationOverlay.innerHTML = "";
+    return;
+  }
+
+  elements.destinationOverlay.innerHTML = getDashboardLocations()
+    .map((location) => {
+      const point = worldToCanvasWithFrame(location.pose, frame);
+      if (
+        !isPointWithinFrame(point, frame) ||
+        point.x < 0 ||
+        point.x > elements.stateMapCanvas.width ||
+        point.y < 0 ||
+        point.y > elements.stateMapCanvas.height
+      ) {
+        return "";
+      }
+      const left = (point.x / elements.stateMapCanvas.width) * 100;
+      const top = (point.y / elements.stateMapCanvas.height) * 100;
+      return `
+        <button
+          class="map-destination-chip"
+          type="button"
+          data-location-id="${escapeHtml(location.id)}"
+          style="left:${left.toFixed(3)}%;top:${top.toFixed(3)}%;"
+        >${escapeHtml(location.name)}</button>
+      `;
+    })
+    .join("");
+}
+
+function handleLocationClick(event) {
+  const button = event.target.closest("[data-location-id]");
+  if (!button) {
+    return;
+  }
+  event.preventDefault();
+  const location = getDashboardLocations().find((item) => item.id === button.dataset.locationId);
+  if (!location) {
+    return;
+  }
+  promptMapGoal({
+    name: location.name,
+    pose: location.pose,
+    configuredDestination: location.configuredDestination,
   });
 }
 
@@ -693,6 +933,75 @@ function getMapConfig(kind) {
     },
   };
   return configs[kind] || null;
+}
+
+function zoomDashboardMap(factor) {
+  const view = state.operatorPanel.mapView;
+  const nextZoom = Math.max(DASHBOARD_MIN_ZOOM, Math.min(DASHBOARD_MAX_ZOOM, view.zoom * factor));
+  if (Math.abs(nextZoom - view.zoom) < 0.001) {
+    return;
+  }
+  view.zoom = nextZoom;
+  renderMap("state");
+}
+
+function enableRobotFollow({ render = true } = {}) {
+  const view = state.operatorPanel.mapView;
+  view.followRobot = true;
+  view.pointerMoved = false;
+  if (render) {
+    renderMap("state");
+  }
+}
+
+function handleDashboardMapPointerDown(event) {
+  if (state.activeScreen !== "start" || event.button !== 2) {
+    return;
+  }
+  event.preventDefault();
+  const view = state.operatorPanel.mapView;
+  view.isPanning = true;
+  view.panPointerId = event.pointerId;
+  view.startClientX = event.clientX;
+  view.startClientY = event.clientY;
+  view.startPanX = view.panX;
+  view.startPanY = view.panY;
+  view.pointerMoved = false;
+  elements.stateMapCanvas.setPointerCapture(event.pointerId);
+  elements.stateMapCanvas.classList.add("is-panning");
+}
+
+function handleDashboardMapPointerMove(event) {
+  const view = state.operatorPanel.mapView;
+  if (!view.isPanning || event.pointerId !== view.panPointerId) {
+    return;
+  }
+  const rect = elements.stateMapCanvas.getBoundingClientRect();
+  const dx = (event.clientX - view.startClientX) * (elements.stateMapCanvas.width / rect.width);
+  const dy = (event.clientY - view.startClientY) * (elements.stateMapCanvas.height / rect.height);
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+    view.pointerMoved = true;
+    view.followRobot = false;
+  }
+  view.panX = view.startPanX + dx;
+  view.panY = view.startPanY + dy;
+  renderMap("state");
+}
+
+function handleDashboardMapPointerUp(event) {
+  const view = state.operatorPanel.mapView;
+  if (!view.isPanning || event.pointerId !== view.panPointerId) {
+    return;
+  }
+  view.isPanning = false;
+  view.panPointerId = null;
+  if (elements.stateMapCanvas.hasPointerCapture(event.pointerId)) {
+    elements.stateMapCanvas.releasePointerCapture(event.pointerId);
+  }
+  elements.stateMapCanvas.classList.remove("is-panning");
+  window.setTimeout(() => {
+    view.pointerMoved = false;
+  }, 0);
 }
 
 async function handleLocalizeRobot() {
@@ -941,82 +1250,174 @@ async function handleDashboardMapClick(event) {
   if (state.activeScreen !== "start" || state.pointMissionInFlight) {
     return;
   }
+  if (event.button !== 0 || state.operatorPanel.mapView.pointerMoved) {
+    state.operatorPanel.mapView.pointerMoved = false;
+    return;
+  }
+
+  const world = canvasPointToWorld(elements.stateMapCanvas, event);
+  if (!world) {
+    setMessage(elements.mapMessage, "Click inside the map area.", true);
+    return;
+  }
+
+  const robot = getSelectedRobot();
+  const x = Number(world.x.toFixed(2));
+  const y = Number(world.y.toFixed(2));
+  const yaw = Number(robot?.yaw || 0);
+  promptMapGoal({
+    name: "",
+    pose: { x, y, yaw },
+    configuredDestination: false,
+  });
+}
+
+function promptMapGoal(goal) {
+  state.operatorPanel.pendingGoal = {
+    name: goal.name || "",
+    configuredDestination: Boolean(goal.configuredDestination),
+    pose: {
+      x: Number(Number(goal.pose.x).toFixed(2)),
+      y: Number(Number(goal.pose.y).toFixed(2)),
+      yaw: Number(Number(goal.pose.yaw || 0).toFixed(2)),
+    },
+  };
+  setMessage(elements.mapMessage, "", false);
+  renderMap("state");
+}
+
+function clearPendingMapGoal() {
+  state.operatorPanel.pendingGoal = null;
+  if (elements.mapConfirmPopover) {
+    elements.mapConfirmPopover.classList.add("hidden");
+  }
+  renderMap("state");
+}
+
+function renderMapConfirmPopover() {
+  const pending = state.operatorPanel.pendingGoal;
+  const popover = elements.mapConfirmPopover;
+  if (!popover || !pending) {
+    if (popover) {
+      popover.classList.add("hidden");
+    }
+    return;
+  }
+
+  const frame = state.operatorPanel.frames[elements.stateMapCanvas.id];
+  if (!frame) {
+    popover.classList.add("hidden");
+    return;
+  }
+
+  const point = worldToCanvasWithFrame(pending.pose, frame);
+  const left = (point.x / elements.stateMapCanvas.width) * 100;
+  const top = (point.y / elements.stateMapCanvas.height) * 100;
+  elements.mapConfirmText.textContent = pending.name
+    ? `Are you sure you want to go to ${pending.name}?`
+    : "Are you sure you want to go to this point?";
+  popover.style.left = `${Math.max(2, Math.min(88, left)).toFixed(3)}%`;
+  popover.style.top = `${Math.max(8, Math.min(86, top)).toFixed(3)}%`;
+  popover.classList.remove("hidden");
+}
+
+async function executePendingMapGoal() {
+  if (!state.operatorPanel.pendingGoal || state.pointMissionInFlight) {
+    return;
+  }
 
   const robot = getSelectedRobot();
   if (!robot) {
     setMessage(elements.mapMessage, "Select a robot first.", true);
     return;
   }
-  if (!currentMapName()) {
-    setMessage(elements.mapMessage, "Select a map first.", true);
-    return;
-  }
 
-  const world = canvasPointToWorld(elements.stateMapCanvas, event);
-  if (!world) {
-    setMessage(elements.mapMessage, "Click inside the live map area.", true);
-    return;
-  }
-
-  const x = Number(world.x.toFixed(2));
-  const y = Number(world.y.toFixed(2));
-  const yaw = Number(robot.yaw || 0);
+  const pending = state.operatorPanel.pendingGoal;
+  const destinationLabel = pending.name || `x ${formatNumber(pending.pose.x)}, y ${formatNumber(pending.pose.y)}`;
   state.pointMissionInFlight = true;
-  setMessage(elements.mapMessage, `Sending ${robot.id} to x ${formatNumber(x)}, y ${formatNumber(y)}.`, false);
+  elements.confirmMapGo.disabled = true;
+  setMessage(elements.mapMessage, `Sending ${robot.id} to ${destinationLabel}.`, false);
 
   try {
-    await sendGoalPose(robot.id, x, y, yaw);
-
-    const destinationResponse = await fetch("/destinations/temp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x,
-        y,
-        yaw,
-        notes: `Map click on ${currentMapName() || "selected map"}`,
-        command_source: getCommandSource(),
-      }),
-    });
-    const destinationBody = await destinationResponse.json();
-    if (!destinationResponse.ok) {
-      throw new Error(destinationBody.detail || "Point destination save failed.");
-    }
-
-    const requestResponse = await fetch("/requests", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requested_by: "map-click",
-        command_source: getCommandSource(),
-        to_destination: "Temp Destination",
-        schedule_type: "single",
-        assigned_robot_id: robot.id,
-        notes: `Point selected at x ${formatNumber(x)}, y ${formatNumber(y)}.`,
-      }),
-    });
-    const requestBody = await requestResponse.json();
-    if (!requestResponse.ok) {
-      throw new Error(requestBody.detail || "Point request creation failed.");
-    }
-
-    const startResponse = await fetch(`/requests/${encodeURIComponent(requestBody.request_id)}/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command_source: getCommandSource() }),
-    });
-    const startBody = await startResponse.json();
-    if (!startResponse.ok) {
-      throw new Error(startBody.detail || "Point mission start failed.");
-    }
-
+    await sendDashboardGoal(robot, pending);
+    state.operatorPanel.pendingGoal = null;
     await Promise.all([loadDestinations(), loadSnapshot(), loadOperatorPanel({ silent: true })]);
-    setMessage(elements.mapMessage, `Mission started to x ${formatNumber(x)}, y ${formatNumber(y)}.`, false);
+    setMessage(elements.mapMessage, `Destination set to ${destinationLabel}.`, false);
   } catch (error) {
     setMessage(elements.mapMessage, error.message || "Point mission failed.", true);
     await Promise.all([loadSnapshot(), loadOperatorPanel({ silent: true })]);
   } finally {
     state.pointMissionInFlight = false;
+    elements.confirmMapGo.disabled = false;
+    renderMap("state");
+  }
+}
+
+async function sendDashboardGoal(robot, pending) {
+  const { x, y, yaw } = pending.pose;
+  await sendGoalPose(robot.id, x, y, yaw);
+
+  const activeMission = getActiveMission();
+  if (activeMission) {
+    await upsertTempMapDestination(pending);
+    return;
+  }
+
+  let toDestination = "Temp Destination";
+  if (pending.configuredDestination && state.destinations.some((destination) => destination.name === pending.name)) {
+    toDestination = pending.name;
+  } else {
+    await upsertTempMapDestination(pending);
+  }
+
+  const requestResponse = await fetch("/requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requested_by: "map-click",
+      command_source: getCommandSource(),
+      to_destination: toDestination,
+      schedule_type: "single",
+      assigned_robot_id: robot.id,
+      notes: pending.name
+        ? `Named destination ${pending.name} on ${dashboardMapDisplayName()}.`
+        : `Point selected at x ${formatNumber(x)}, y ${formatNumber(y)}.`,
+    }),
+  });
+  const requestBody = await requestResponse.json();
+  if (!requestResponse.ok) {
+    throw new Error(requestBody.detail || "Point request creation failed.");
+  }
+
+  const startResponse = await fetch(`/requests/${encodeURIComponent(requestBody.request_id)}/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command_source: getCommandSource() }),
+  });
+  const startBody = await startResponse.json();
+  if (!startResponse.ok) {
+    throw new Error(startBody.detail || "Point mission start failed.");
+  }
+}
+
+async function upsertTempMapDestination(pending) {
+  const { x, y, yaw } = pending.pose;
+  const response = await fetch("/destinations/temp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      x,
+      y,
+      yaw,
+      notes: pending.name
+        ? `Selected ${pending.name} on ${dashboardMapDisplayName()}.`
+        : `Map click on ${dashboardMapDisplayName()}.`,
+      command_source: getCommandSource(),
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body.detail || "Point destination save failed.");
   }
 }
 
@@ -1503,27 +1904,38 @@ function drawMap(canvas, mapData, markers) {
   clearCanvas(canvas);
   const raster = getRenderedMapRaster(mapData);
   const padding = 16;
-  const scale = Math.min((canvas.width - padding * 2) / mapData.width, (canvas.height - padding * 2) / mapData.height);
+  const view = markers.view || {};
+  const baseScale = Math.min((canvas.width - padding * 2) / mapData.width, (canvas.height - padding * 2) / mapData.height);
+  const scale = baseScale * (Number(view.zoom) || 1);
   const drawWidth = mapData.width * scale;
   const drawHeight = mapData.height * scale;
-  const offsetX = (canvas.width - drawWidth) / 2;
-  const offsetY = (canvas.height - drawHeight) / 2;
+  const baseOffsetX = (canvas.width - drawWidth) / 2;
+  const baseOffsetY = (canvas.height - drawHeight) / 2;
+  if (view.followRobot && markers.robot) {
+    centerMapViewOnPose(view, markers.robot, mapData, canvas, baseOffsetX, baseOffsetY, scale);
+  }
+  const offsetX = baseOffsetX + (Number(view.panX) || 0);
+  const offsetY = baseOffsetY + (Number(view.panY) || 0);
+  const frame = { map: mapData, offsetX, offsetY, drawWidth, drawHeight, scale };
 
   ctx.drawImage(raster, offsetX, offsetY, drawWidth, drawHeight);
   ctx.strokeStyle = "rgba(23, 39, 36, 0.24)";
   ctx.strokeRect(offsetX, offsetY, drawWidth, drawHeight);
 
   if (markers.initialPose) {
-    drawInitialPoseMarker(ctx, worldToCanvas(markers.initialPose, mapData, offsetX, offsetY, scale), markers.initialPose.yaw || 0);
+    drawInitialPoseMarker(ctx, worldToCanvasWithFrame(markers.initialPose, frame), markers.initialPose.yaw || 0);
   }
   if (markers.goalPose) {
-    drawGoalMarker(ctx, worldToCanvas(markers.goalPose, mapData, offsetX, offsetY, scale));
+    drawGoalMarker(ctx, worldToCanvasWithFrame(markers.goalPose, frame));
+  }
+  if (markers.pendingGoal) {
+    drawPendingGoalMarker(ctx, worldToCanvasWithFrame(markers.pendingGoal, frame));
   }
   if (markers.robot) {
-    drawRobotMarker(ctx, worldToCanvas(markers.robot, mapData, offsetX, offsetY, scale), markers.robot.yaw || 0);
+    drawRobotMarker(ctx, worldToCanvasWithFrame(markers.robot, frame), markers.robot.yaw || 0, frame);
   }
 
-  state.operatorPanel.frames[canvas.id] = { map: mapData, offsetX, offsetY, drawWidth, drawHeight, scale };
+  state.operatorPanel.frames[canvas.id] = frame;
 }
 
 function getRenderedMapRaster(mapData) {
@@ -1554,6 +1966,15 @@ function getRenderedMapRaster(mapData) {
   state.operatorPanel.renderedMapKey = key;
   state.operatorPanel.renderedMapCanvas = canvas;
   return canvas;
+}
+
+function centerMapViewOnPose(view, pose, mapData, canvas, baseOffsetX, baseOffsetY, scale) {
+  const point = worldToCanvas(pose, mapData, baseOffsetX, baseOffsetY, scale);
+  if ([point.x, point.y].some((value) => !Number.isFinite(value))) {
+    return;
+  }
+  view.panX = (canvas.width / 2) - point.x;
+  view.panY = (canvas.height / 2) - point.y;
 }
 
 function canvasPointToWorld(canvas, event) {
@@ -1589,18 +2010,53 @@ function worldToCanvas(pose, mapData, offsetX, offsetY, scale) {
   };
 }
 
-function drawRobotMarker(ctx, point, yaw) {
+function worldToCanvasWithFrame(pose, frame) {
+  return worldToCanvas(pose, frame.map, frame.offsetX, frame.offsetY, frame.scale);
+}
+
+function isPointWithinFrame(point, frame) {
+  return (
+    point.x >= frame.offsetX &&
+    point.x <= frame.offsetX + frame.drawWidth &&
+    point.y >= frame.offsetY &&
+    point.y <= frame.offsetY + frame.drawHeight
+  );
+}
+
+function drawRobotMarker(ctx, point, yaw, frame) {
+  const pixelsPerMeter = frame.scale / frame.map.resolution;
+  const front = ROBOT_FOOTPRINT_FRONT_M * pixelsPerMeter;
+  const rear = ROBOT_FOOTPRINT_REAR_M * pixelsPerMeter;
+  const width = ROBOT_FOOTPRINT_WIDTH_M * pixelsPerMeter;
+  const markerLength = front + rear;
+  const strokeWidth = Math.max(2, Math.min(5, pixelsPerMeter * 0.035));
+
   ctx.save();
   ctx.translate(point.x, point.y);
   ctx.rotate(-(Number(yaw) || 0));
-  ctx.fillStyle = "#075f5b";
-  ctx.fillRect(-7, -5, 14, 10);
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
+  ctx.fillStyle = "rgba(72, 92, 114, 0.92)";
+  ctx.strokeStyle = "#f7f9fb";
+  ctx.lineWidth = strokeWidth;
+
+  ctx.beginPath();
+  ctx.rect(-rear, -width / 2, markerLength, width);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.strokeStyle = "#dbe4ec";
+  ctx.lineWidth = Math.max(1.5, strokeWidth * 0.65);
   ctx.beginPath();
   ctx.moveTo(0, 0);
-  ctx.lineTo(11, 0);
+  ctx.lineTo(front * 0.78, 0);
+  ctx.moveTo(front * 0.62, -width * 0.18);
+  ctx.lineTo(front * 0.82, 0);
+  ctx.lineTo(front * 0.62, width * 0.18);
   ctx.stroke();
+
+  ctx.fillStyle = "#f7f9fb";
+  ctx.beginPath();
+  ctx.arc(0, 0, Math.max(2, Math.min(5, pixelsPerMeter * 0.045)), 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1631,6 +2087,24 @@ function drawGoalMarker(ctx, point) {
   ctx.restore();
 }
 
+function drawPendingGoalMarker(ctx, point) {
+  ctx.save();
+  ctx.fillStyle = "rgba(18, 83, 134, 0.18)";
+  ctx.strokeStyle = "#125386";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(point.x - 18, point.y);
+  ctx.lineTo(point.x + 18, point.y);
+  ctx.moveTo(point.x, point.y - 18);
+  ctx.lineTo(point.x, point.y + 18);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function clearCanvas(canvas) {
   if (!canvas) {
     return;
@@ -1643,7 +2117,28 @@ function clearCanvas(canvas) {
 }
 
 function getSelectedRobot() {
-  return state.robots.find((robot) => robot.id === elements.selectedRobot.value) || state.robots[0] || null;
+  return state.robots.find((robot) => robot.id === elements.selectedRobot.value) || sortedRobotsForSelection()[0] || null;
+}
+
+function sortedRobotsForSelection() {
+  return [...state.robots].sort((a, b) => {
+    const aConnected = robotConnectionLabel(a) === "Connected" ? 0 : 1;
+    const bConnected = robotConnectionLabel(b) === "Connected" ? 0 : 1;
+    if (aConnected !== bConnected) {
+      return aConnected - bConnected;
+    }
+    const aOnline = a.online === false ? 1 : 0;
+    const bOnline = b.online === false ? 1 : 0;
+    if (aOnline !== bOnline) {
+      return aOnline - bOnline;
+    }
+    const aHasPower = a.power ? 0 : 1;
+    const bHasPower = b.power ? 0 : 1;
+    if (aHasPower !== bHasPower) {
+      return aHasPower - bHasPower;
+    }
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
 }
 
 function getSavedMaps() {
@@ -1654,10 +2149,24 @@ function currentMapName() {
   return state.operatorPanel.data?.current_map_name || "";
 }
 
+function dashboardMapDisplayName() {
+  return DEMO_MAP_DISPLAY_NAME;
+}
+
 function getPendingRequests() {
   return state.missions
     .filter((mission) => mission.state === "Requested")
     .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0));
+}
+
+function getActiveMission() {
+  return state.missions.find((item) =>
+    item.state !== "Requested" &&
+    item.state !== "Completed" &&
+    item.outcome !== "Canceled" &&
+    item.outcome !== "Failed" &&
+    item.outcome !== "Aborted"
+  ) || null;
 }
 
 function getWaitingForReturnMission() {
@@ -1828,9 +2337,34 @@ function setMessage(element, message, isError) {
   if (!element) {
     return;
   }
+  const existingTimer = messageTimers.get(element);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+    messageTimers.delete(element);
+  }
+
   element.textContent = message || "";
   element.classList.toggle("error", Boolean(message && isError));
   element.classList.toggle("success", Boolean(message && !isError));
+
+  if (!message) {
+    delete element.dataset.messageToken;
+    return;
+  }
+
+  const token = `${Date.now()}:${Math.random()}`;
+  element.dataset.messageToken = token;
+  const timeout = isError ? MESSAGE_ERROR_TIMEOUT_MS : MESSAGE_SUCCESS_TIMEOUT_MS;
+  const timer = window.setTimeout(() => {
+    if (element.dataset.messageToken !== token) {
+      return;
+    }
+    element.textContent = "";
+    element.classList.remove("error", "success");
+    delete element.dataset.messageToken;
+    messageTimers.delete(element);
+  }, timeout);
+  messageTimers.set(element, timer);
 }
 
 function slugify(value) {
