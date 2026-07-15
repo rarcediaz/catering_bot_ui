@@ -18,22 +18,48 @@ It started as a ROS2-independent mission-control backend. This repo now includes
 
 ## Quick start
 
+For the physical robot, start the UI and navigation with the default downstairs
+map using one command on the central computer:
+
+```bash
+./launch_navigation_ui.sh
+```
+
+The launcher starts Mission Control, selects `downstairs_test_july1`, starts
+Nav2/AMCL through the existing local launcher, waits for the map, localization
+service, and navigation lifecycle to become active, and then opens the UI. Pass another
+saved map name when needed:
+
+```bash
+./launch_navigation_ui.sh another_map
+```
+
+Do not manually launch `central_compute.launch.py` at the same time. The wrapper
+owns that process and stops it when you press Ctrl+C. Set `OPEN_UI_BROWSER=false`
+to suppress automatic browser opening, or
+`MISSION_CONTROL_ROS2_LAUNCH_RVIZ=true` to include RViz.
+
+Run the environment setup once on a new central computer:
+
 ```bash
 ./setup_env_linux.sh
+```
+
+For UI-only simulation, use:
+
+```bash
 ./run_server.sh
 ```
 
-When using the ROS2 adapter with the current `catering_bot-main` package, prefer:
+The one-command physical-robot launcher sets these values automatically:
 
 ```bash
 export ROS_DOMAIN_ID=0
 export ROS_LOCALHOST_ONLY=0
 export MISSION_CONTROL_ROBOT_BACKEND=ros2
-export MISSION_CONTROL_ROS2_ROBOT_WORKSPACE=$HOME/robot_ws
 export MISSION_CONTROL_ROS2_MAPPING_WORKSPACE=$HOME/dev_ws
-export MISSION_CONTROL_ROS2_NAV_WORKSPACE=$HOME/robot_ws
+export MISSION_CONTROL_ROS2_NAV_WORKSPACE=$HOME/dev_ws
 export MISSION_CONTROL_ROS2_MAP_DIRECTORY=$HOME/dev_ws/src/my_bot/maps
-./run_server.sh
 ```
 
 `--reload` is convenient for the simulated backend, but it can create duplicate ROS 2 nodes/processes.
@@ -146,14 +172,15 @@ uses a local launcher by default:
 - Nav2: `ros2 launch my_bot central_compute.launch.py use_slam:=false use_nav2:=true map:=...`
 - save map: `ros2 run nav2_map_server map_saver_cli -f ...`
 
-The Pi still needs the bare robot stack running on the same ROS domain. You can
-start that manually from `catering_bot-main` using the project command sheet:
+The Pi still needs the bare robot stack running on the same ROS domain. In the
+normal deployment, `my-bot-robot.service` starts this automatically at boot.
+For a temporary manual run, first stop that service and then launch the stack:
 
 ```bash
+sudo systemctl stop my-bot-robot.service
 cd ~/robot_ws
-colcon build --symlink-install
 source install/setup.bash
-ros2 launch my_bot rpi_robot.launch.py
+ros2 launch my_bot rpi_robot.launch.py use_heartbeat:=false
 ```
 
 Optional ROS2 tuning env vars:

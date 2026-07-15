@@ -686,7 +686,6 @@ class Ros2RobotAdapter(RobotAdapter):
         process = subprocess.Popen(
             command,
             start_new_session=True,
-            stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
         self._local_processes[key] = process

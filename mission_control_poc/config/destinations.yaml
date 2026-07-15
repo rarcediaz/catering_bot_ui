@@ -22,10 +22,10 @@ destinations:
     yaw: 3.14
 - name: Temp Destination
   pose:
-    x: -4.06
-    y: -1.93
-    yaw: 1.4730022340514792
-  notes: Map click on downstairs_test_july1
+    x: -1.01
+    y: 0.41
+    yaw: 3.05
+  notes: Map click on downstairs_test_july_1.
 - name: TestPointJune3
   pose:
     x: 5.92
