@@ -21,7 +21,7 @@ const state = {
       zoom: 1,
       panX: 0,
       panY: 0,
-      followRobot: true,
+      followRobot: false,
       isPanning: false,
       panPointerId: null,
       startClientX: 0,
@@ -47,10 +47,10 @@ const MANUAL_BASE_SPEED = 0.5;
 const MANUAL_MAX_SPEED = 0.7;
 const MANUAL_ACCEL_RATE = 0.1;
 const MANUAL_TICK_MS = 100;
-const DEMO_MAP_BACKEND_NAME = "downstairs_test_july1";
-const DEMO_MAP_DISPLAY_NAME = "downstairs_test_july_1";
+const DEFAULT_MAP_NAME = "downstairs_test_july1";
 const DASHBOARD_MIN_ZOOM = 0.75;
 const DASHBOARD_MAX_ZOOM = 4;
+const ROBOT_FOCUS_ZOOM = 1.6;
 const ROBOT_FOOTPRINT_FRONT_M = 0.9;
 const ROBOT_FOOTPRINT_REAR_M = 0.1;
 const ROBOT_FOOTPRINT_WIDTH_M = 0.6;
@@ -68,6 +68,7 @@ const DEMO_LOCATIONS = [
 
 const elements = {
   selectedRobot: document.getElementById("selected-robot"),
+  dashboardMapTitle: document.getElementById("demo-map-title"),
   dashboardMapShell: document.getElementById("dashboard-map-shell"),
   destinationOverlay: document.getElementById("destination-overlay"),
   locationSearch: document.getElementById("location-search"),
@@ -195,13 +196,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   elements.selectedRobot.addEventListener("change", async () => {
     state.operatorPanel.data = null;
-    state.operatorPanel.mapPreview = null;
-    state.operatorPanel.mapPreviewName = null;
-    enableRobotFollow();
+    const robot = getSelectedRobot();
+    if (isRobotVisibleOnMap(robot)) {
+      enableRobotFollow();
+    } else {
+      resetDashboardMapView();
+    }
     clearPendingMapGoal();
     state.operatorPanel.frames = {};
     await loadOperatorPanel();
-    await loadDemoMapPreview({ silent: true });
+    await loadDashboardMapPreview({ silent: true });
     renderAll();
   });
 
@@ -298,7 +302,7 @@ document.addEventListener("DOMContentLoaded", () => {
 async function boot() {
   await Promise.all([loadDestinations(), loadSnapshot()]);
   await loadOperatorPanel();
-  await loadDemoMapPreview({ silent: true });
+  await loadDashboardMapPreview({ silent: true });
   startOperatorPanelRefresh();
   connectStatusStream();
   syncTripType();
@@ -344,13 +348,14 @@ function startOperatorPanelRefresh() {
   if (state.operatorPanel.refreshTimer !== null) {
     window.clearInterval(state.operatorPanel.refreshTimer);
   }
-  state.operatorPanel.refreshTimer = window.setInterval(() => {
-    void loadOperatorPanel({ silent: true });
+  state.operatorPanel.refreshTimer = window.setInterval(async () => {
+    await loadOperatorPanel({ silent: true });
+    await loadDashboardMapPreview({ silent: true });
   }, 3000);
 }
 
 async function loadOperatorPanel({ silent = false } = {}) {
-  const robot = getSelectedRobot();
+  const robot = getMapContextRobot();
   if (!robot) {
     state.operatorPanel.data = null;
     renderAll();
@@ -374,26 +379,28 @@ async function loadOperatorPanel({ silent = false } = {}) {
   }
 }
 
-async function loadDemoMapPreview({ silent = false } = {}) {
-  const robot = getSelectedRobot();
+async function loadDashboardMapPreview({ silent = false } = {}) {
+  const robot = getMapContextRobot();
   if (!robot || state.operatorPanel.mapPreviewInFlight) {
     return;
   }
-  if (state.operatorPanel.mapPreviewName === DEMO_MAP_BACKEND_NAME && state.operatorPanel.mapPreview) {
+  const mapName = currentMapName() || getSavedMaps()[0] || DEFAULT_MAP_NAME;
+  if (state.operatorPanel.mapPreviewName === mapName && state.operatorPanel.mapPreview) {
     return;
   }
 
   state.operatorPanel.mapPreviewInFlight = true;
   try {
     const response = await fetch(
-      `/robots/${encodeURIComponent(robot.id)}/maps/${encodeURIComponent(DEMO_MAP_BACKEND_NAME)}/preview`
+      `/robots/${encodeURIComponent(robot.id)}/maps/${encodeURIComponent(mapName)}/preview`
     );
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || "Map preview load failed.");
     }
     state.operatorPanel.mapPreview = payload.map;
-    state.operatorPanel.mapPreviewName = DEMO_MAP_BACKEND_NAME;
+    state.operatorPanel.mapPreviewName = mapName;
+    resetDashboardMapView({ render: false });
   } catch (error) {
     if (!silent) {
       setMessage(elements.mapMessage, error.message || "Map preview load failed.", true);
@@ -462,7 +469,6 @@ function populateRobotSelects() {
   const selectedRobotId = elements.selectedRobot.value;
   const requestRobotId = elements.requestRobot.value;
   const robots = sortedRobotsForSelection();
-  let selectedRobotChanged = false;
   const robotOptions = robots
     .map((robot) => {
       const suffix = robotConnectionLabel(robot) === "Connected" ? "" : " (offline)";
@@ -470,15 +476,9 @@ function populateRobotSelects() {
     })
     .join("");
 
-  elements.selectedRobot.innerHTML = robotOptions || '<option value="">No robots available</option>';
+  elements.selectedRobot.innerHTML = '<option value="">Map overview</option>' + robotOptions;
   if ([...elements.selectedRobot.options].some((option) => option.value === selectedRobotId)) {
     elements.selectedRobot.value = selectedRobotId;
-  } else if (robots.length) {
-    elements.selectedRobot.value = robots[0].id;
-    selectedRobotChanged = true;
-  }
-  if (selectedRobotChanged) {
-    enableRobotFollow({ render: false });
   }
 
   elements.requestRobot.innerHTML = '<option value="">Auto-select available robot</option>' + robotOptions;
@@ -499,6 +499,7 @@ function renderHeader() {
   setText(elements.headerConnection, robot ? robotConnectionLabel(robot) : "--");
   setText(elements.headerLatency, power.latency_ms == null ? "--" : `${formatNumber(power.latency_ms)} ms`);
   setText(elements.headerMap, mapName || "No map");
+  setText(elements.dashboardMapTitle, mapName || "No map selected");
 }
 
 function renderStartRobotState() {
@@ -767,7 +768,7 @@ function renderMap(kind) {
     config.placeholder.classList.remove("hidden");
     config.placeholder.textContent =
       kind === "state"
-        ? `Loading ${DEMO_MAP_DISPLAY_NAME}.`
+        ? `Loading ${dashboardMapDisplayName() || "map"}.`
         : currentMapName()
           ? "Waiting for live map data."
           : "Select a map to show the live map.";
@@ -780,10 +781,10 @@ function renderMap(kind) {
   }
 
   config.placeholder.classList.add("hidden");
-  const mapLabel = kind === "state" ? DEMO_MAP_DISPLAY_NAME : (map.name || currentMapName() || "Live map");
+  const mapLabel = map.name || currentMapName() || "Live map";
   setText(config.meta, `${mapLabel}: ${map.width} x ${map.height}, ${formatNumber(map.resolution)} m/cell`);
   drawMap(config.canvas, map, {
-    robot,
+    robot: isRobotVisibleOnMap(robot) ? robot : null,
     initialPose: data?.initial_pose,
     goalPose: data?.goal_pose,
     pendingGoal: kind === "state" ? state.operatorPanel.pendingGoal?.pose : null,
@@ -947,7 +948,20 @@ function zoomDashboardMap(factor) {
 
 function enableRobotFollow({ render = true } = {}) {
   const view = state.operatorPanel.mapView;
+  view.zoom = ROBOT_FOCUS_ZOOM;
   view.followRobot = true;
+  view.pointerMoved = false;
+  if (render) {
+    renderMap("state");
+  }
+}
+
+function resetDashboardMapView({ render = true } = {}) {
+  const view = state.operatorPanel.mapView;
+  view.zoom = 1;
+  view.panX = 0;
+  view.panY = 0;
+  view.followRobot = false;
   view.pointerMoved = false;
   if (render) {
     renderMap("state");
@@ -1057,6 +1071,7 @@ async function handleSelectMap() {
     await sendSystemCommand("launch_nav", { mapName, messageTarget: elements.manageMessage });
     setMessage(elements.manageMessage, `Selected map: ${mapName}`, false);
     await loadOperatorPanel({ silent: true });
+    await loadDashboardMapPreview({ silent: true });
   } catch (error) {
     setMessage(elements.manageMessage, error.message || "Map selection failed.", true);
   }
@@ -1119,6 +1134,7 @@ async function handleSaveMapping() {
     elements.mappingMapName.value = "";
     setMessage(elements.startNextMessage, `Map saved and selected: ${mapName}`, false);
     await loadOperatorPanel({ silent: true });
+    await loadDashboardMapPreview({ silent: true });
     showScreen("start");
   } catch (error) {
     setMessage(elements.mappingMessage, error.message || "Map save failed.", true);
@@ -2117,7 +2133,15 @@ function clearCanvas(canvas) {
 }
 
 function getSelectedRobot() {
-  return state.robots.find((robot) => robot.id === elements.selectedRobot.value) || sortedRobotsForSelection()[0] || null;
+  return state.robots.find((robot) => robot.id === elements.selectedRobot.value) || null;
+}
+
+function getMapContextRobot() {
+  return getSelectedRobot() || sortedRobotsForSelection()[0] || null;
+}
+
+function isRobotVisibleOnMap(robot) {
+  return Boolean(robot && robot.online !== false && robot.connection_ok && robot.localization_valid);
 }
 
 function sortedRobotsForSelection() {
@@ -2150,7 +2174,7 @@ function currentMapName() {
 }
 
 function dashboardMapDisplayName() {
-  return DEMO_MAP_DISPLAY_NAME;
+  return state.operatorPanel.mapPreview?.name || currentMapName() || "";
 }
 
 function getPendingRequests() {

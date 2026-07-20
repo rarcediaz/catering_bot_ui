@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>IntelliTrolley Mission Control</title>
-    <link rel="stylesheet" href="/ui-assets/styles.css?v=20260713-map-demo" />
+    <link rel="stylesheet" href="/ui-assets/styles.css?v=20260720-map-viewport" />
   </head>
   <body>
     <div class="shell">
@@ -14,7 +14,7 @@
             <div class="map-shell dashboard-map-shell" id="dashboard-map-shell">
               <canvas id="state-map-canvas" width="1280" height="820"></canvas>
               <div class="destination-overlay" id="destination-overlay" aria-label="Map destinations"></div>
-              <div class="map-placeholder" id="state-map-placeholder">Loading downstairs_test_july_1.</div>
+              <div class="map-placeholder" id="state-map-placeholder">Loading map.</div>
 
               <div class="map-control robot-control">
                 <label class="selector-field robot-selector">
@@ -25,7 +25,7 @@
                 </label>
               </div>
 
-              <div class="map-title-chip" id="demo-map-title">downstairs_test_july_1</div>
+              <div class="map-title-chip" id="demo-map-title">No map selected</div>
 
               <aside class="location-search-panel" aria-label="Saved locations">
                 <label class="location-search-field">
@@ -454,6 +454,6 @@
       </div>
     </div>
 
-    <script src="/ui-assets/app.js?v=20260713-map-demo" defer></script>
+    <script src="/ui-assets/app.js?v=20260720-map-viewport" defer></script>
   </body>
 </html>

@@ -131,7 +131,19 @@ if [[ ! "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
   fail "map/Nav2 request returned HTTP ${http_status}: ${response_body}"
 fi
 
-echo "Map '${MAP_NAME}' selected. Waiting for Nav2 and AMCL..."
+echo
+echo "UI is ready with map '${MAP_NAME}'."
+echo "UI: ${BASE_URL}/ui"
+echo "The map remains available when the robot is offline."
+echo "Press Ctrl+C here to stop the UI and its Nav2 process."
+
+if [[ "${OPEN_UI_BROWSER:-true}" =~ ^(1|true|yes|on)$ ]] \
+    && command -v xdg-open >/dev/null 2>&1 \
+    && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  xdg-open "${BASE_URL}/ui" 9>&- >/dev/null 2>&1 &
+fi
+
+echo "Waiting for Nav2 and AMCL in the background startup flow..."
 deadline=$((SECONDS + NAV_READY_TIMEOUT_S))
 while true; do
   if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -153,20 +165,14 @@ while true; do
   fi
 
   if (( SECONDS >= deadline )); then
-    fail "Nav2/AMCL did not become ready within ${NAV_READY_TIMEOUT_S}s."
+    echo "Warning: Nav2/AMCL is not ready after ${NAV_READY_TIMEOUT_S}s; the map UI will remain available." >&2
+    break
   fi
   sleep 1
 done
 
-echo
-echo "Navigation is ready with map '${MAP_NAME}'."
-echo "UI: ${BASE_URL}/ui"
-echo "Press Ctrl+C here to stop the UI and its Nav2 process."
-
-if [[ "${OPEN_UI_BROWSER:-true}" =~ ^(1|true|yes|on)$ ]] \
-    && command -v xdg-open >/dev/null 2>&1 \
-    && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-  xdg-open "${BASE_URL}/ui" 9>&- >/dev/null 2>&1 &
+if (( SECONDS < deadline )); then
+  echo "Navigation is ready with map '${MAP_NAME}'."
 fi
 
 wait "${SERVER_PID}"

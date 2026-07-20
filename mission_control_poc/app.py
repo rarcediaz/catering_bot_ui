@@ -39,7 +39,7 @@ BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "mission_control.sqlite3"
 DEST_CONFIG_PATH = BASE_DIR / "config" / "destinations.yaml"
 UI_DIR = BASE_DIR / "ui"
-SERVER_BUILD = "on-off-priority-controls"
+SERVER_BUILD = "offline-map-and-viewport"
 
 
 storage = Storage(DB_PATH)
